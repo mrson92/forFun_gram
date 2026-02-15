@@ -1,0 +1,7 @@
+services:
+  analyzer:
+    build: .
+    container_name: log-analyzer-svc
+    ports:
+      - "8080:80"
+    restart: always

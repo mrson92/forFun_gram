@@ -114,6 +114,7 @@ const App = () => {
   const [progress, setProgress] = useState(0);
   const [logType, setLogType] = useState('sql_logback'); 
   const [searchTerm, setSearchTerm] = useState('');
+  const [responseTimeThreshold, setResponseTimeThreshold] = useState(200); // Added state for response time threshold
   
   const [sortConfig, setSortConfig] = useState({ key: 'responseTime', direction: 'desc' });
 
@@ -275,7 +276,10 @@ const App = () => {
   const sortedAndFilteredLogs = useMemo(() => {
     let result = [...logs];
     if (searchTerm) result = result.filter(l => l.url.toLowerCase().includes(searchTerm.toLowerCase()));
-    result.sort((a, b) => {
+    result = result.filter(log => (log.responseTime * 1000) > responseTimeThreshold); // Apply the threshold filter
+
+
+      result.sort((a, b) => {
       const aValue = a[sortConfig.key];
       const bValue = b[sortConfig.key];
       if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -283,7 +287,7 @@ const App = () => {
       return 0;
     });
     return result;
-  }, [logs, searchTerm, sortConfig]);
+  }, [logs, searchTerm, sortConfig, responseTimeThreshold]);
 
   const SortIndicator = ({ columnKey }) => {
     if (sortConfig.key !== columnKey) return <div className="w-4 h-4 opacity-20"><ChevronUp size={14} /></div>;
@@ -343,6 +347,16 @@ const App = () => {
             <input type="file" className="hidden" onChange={handleFileUpload} accept=".log,.txt" />
           </label>
         </div>
+          <div className="flex items-center gap-2 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
+              <label htmlFor="responseTimeThreshold" className="text-sm font-medium text-slate-700">
+                  지연 시간 임계값 (ms):
+              </label>
+              <input
+                  type="number" id="responseTimeThreshold" className="w-20 px-3 py-2 border rounded-md shadow-sm focus:ring focus:ring-blue-200 focus:outline-none text-sm"
+                  value={responseTimeThreshold}
+                  onChange={(e) => setResponseTimeThreshold(Number(e.target.value))}
+              />
+          </div>
       </header>
 
       {isProcessing && (

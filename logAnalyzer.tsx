@@ -278,8 +278,7 @@ const App = () => {
     if (searchTerm) result = result.filter(l => l.url.toLowerCase().includes(searchTerm.toLowerCase()));
     result = result.filter(log => (log.responseTime * 1000) > responseTimeThreshold); // Apply the threshold filter
 
-
-      result.sort((a, b) => {
+    result.sort((a, b) => {
       const aValue = a[sortConfig.key];
       const bValue = b[sortConfig.key];
       if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;

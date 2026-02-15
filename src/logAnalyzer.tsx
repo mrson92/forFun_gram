@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import { 
   Upload, FileText, Activity, Users, Globe, AlertTriangle, 
-  BarChart3, Clock, Search, Timer, ZapOff, Server, Layout, Coffee, Database,
+  BarChart3, Clock, Search, Timer, ZapOff, Server, Layout, Coffee, Database, Shield,
   ChevronUp, ChevronDown, Table as TableIcon, Download, Info, Trash2
 } from 'lucide-react';
 
@@ -26,7 +26,8 @@ const BUCKET_CONFIG = [
 const REGEX = {
   access: /^(\S+)(?:\s+\S+\s+\S+)?\s+\[(.*?)\]\s+"(\S+)\s+(\S+).*?"\s+(\d+)\s+(\d+|-)(?:\s+(\d+\.?\d*))?/,
   sql: /\[SQL_END\]\s+\[(.*?)\]\s+\[(\d+)ms\]/,
-  sqlTime: /\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})/
+  sqlTime: /\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})/,
+  secure: /^([A-Z][a-z]{2}\s+\s?\d+\s\d{2}:\d{2}:\d{2})\s+(\S+)\s+([^:]+):\s+(.*)$/
 };
 
 const getRespBucket = (timeInSec) => {
@@ -47,6 +48,12 @@ const get5MinKey = (rawTime, type) => {
       const [h, m] = time.split(':');
       const bucketM = Math.floor(parseInt(m) / 5) * 5;
       return `${date} ${h}:${bucketM.toString().padStart(2, '0')}`;
+    } else if (type === 'linux_secure') {
+      const parts = rawTime.split(/\s+/);
+      const timeStr = parts[2];
+      const [h, m] = timeStr.split(':');
+      const bucketM = Math.floor(parseInt(m) / 5) * 5;
+      return `${parts[0]} ${parts[1]} ${h}:${bucketM.toString().padStart(2, '0')}`;
     } else {
       const parts = rawTime.split(':');
       const h = parts[1];
@@ -70,6 +77,19 @@ const parseLogLine = (line, type) => {
       url: sqlMatch[1].split('.').pop(),
       status: 200,
       responseTime: durationMs / 1000
+    };
+  } else if (type === 'linux_secure') {
+    const match = line.match(REGEX.secure);
+    if (!match) return null;
+    const [_, timestamp, hostname, process, message] = match;
+    const ipMatch = message.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+    return {
+      ip: ipMatch ? ipMatch[1] : "System",
+      rawTimestamp: timestamp,
+      method: process,
+      url: message,
+      status: (message.toLowerCase().includes('fail') || message.toLowerCase().includes('error') || message.toLowerCase().includes('refused')) ? 401 : 200,
+      responseTime: 0
     };
   } else {
     const match = line.match(REGEX.access);
@@ -203,7 +223,7 @@ const App = () => {
         if (status >= 400) errorCount++;
 
         if (responseTime !== null) {
-          const timeBucketKey = get5MinKey(rawTimestamp, logType === 'sql_logback' ? 'sql_logback' : 'access');
+          const timeBucketKey = get5MinKey(rawTimestamp, logType);
           const respBucket = getRespBucket(responseTime);
 
           if (!distributionMap[timeBucketKey]) {
@@ -218,8 +238,8 @@ const App = () => {
           totalResponseTime += responseTime;
           responseTimeCount++;
 
-          // 200ms(0.2s) 이상인 것만 상세 목록용으로 수집
-          if (responseTime >= SLOW_THRESHOLD) {
+          // 200ms(0.2s) 이상인 것만 상세 목록용으로 수집 (Secure 로그는 모두 수집)
+          if (responseTime >= SLOW_THRESHOLD || logType === 'linux_secure') {
             filteredLogs.push({ id: totalRequests, ...parsed });
           }
         }
@@ -239,7 +259,7 @@ const App = () => {
     })).sort((a, b) => b.avgTime - a.avgTime).slice(0, 20);
 
     const tpsData = Object.entries(tpsMap).sort((a, b) => a[0].localeCompare(b[0])).map(([time, count]) => ({ 
-      time: time.includes(' ') ? time.split(' ')[1] : time, tps: count 
+      time: time.includes(' ') ? time.split(/\s+/).pop() : time, tps: count 
     }));
 
     const distributionStats = Object.entries(distributionMap).sort((a, b) => a[0].localeCompare(b[0])).map(([time, buckets]) => ({ 
@@ -306,7 +326,8 @@ const App = () => {
               { id: 'sql_logback', label: 'MyBatis', icon: <Database size={14}/> },
               { id: 'nginx', label: 'Nginx', icon: <Server size={14}/> },
               { id: 'tomcat', label: 'Tomcat', icon: <Layout size={14}/> },
-              { id: 'logback', label: 'Logback', icon: <Coffee size={14}/> }
+              { id: 'logback', label: 'Logback', icon: <Coffee size={14}/> },
+              { id: 'linux_secure', label: 'Linux Secure', icon: <Shield size={14}/> }
             ].map(type => (
               <button 
                 key={type.id}
@@ -345,7 +366,7 @@ const App = () => {
           {/* Top Stats */}
           <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard icon={<FileText className="text-blue-500" />} label={logType === 'sql_logback' ? "쿼리 실행" : "전체 요청"} value={summaryStats.totalRequests.toLocaleString()} />
-            <StatCard icon={<Timer className="text-orange-500" />} label="평균 응답시간" value={summaryStats.avgResponseTime + "s"} />
+            <StatCard icon={<Timer className="text-orange-500" />} label="평균 응답시간" value={logType === 'linux_secure' ? "N/A" : summaryStats.avgResponseTime + "s"} />
             <StatCard icon={<Globe className="text-indigo-500" />} label={logType === 'sql_logback' ? "유니크 쿼리" : "유니크 경로"} value={summaryStats.uniqueApis.toLocaleString()} />
             <StatCard icon={<Activity className="text-emerald-500" />} label="최고 부하 (Peak)" value={summaryStats.maxTps + (logType === 'sql_logback' ? " QPS" : " TPS")} />
           </section>
@@ -434,7 +455,7 @@ const App = () => {
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <ZapOff className="text-red-500" />
-                지연 시간 상위 API (Avg Response)
+                {logType === 'linux_secure' ? '주요 이벤트 프로세스' : '지연 시간 상위 API (Avg Response)'}
               </h3>
               <div className="h-[450px]">
                 <ResponsiveContainer width="100%" height="100%">
@@ -457,7 +478,7 @@ const App = () => {
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <BarChart3 className="text-emerald-500" />
-                호출 빈도 상위 10건
+                {logType === 'linux_secure' ? '빈도 상위 메시지 유형' : '호출 빈도 상위 10건'}
               </h3>
               <div className="h-[450px]">
                 <ResponsiveContainer width="100%" height="100%">
@@ -482,7 +503,7 @@ const App = () => {
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-red-100 rounded-lg"><ZapOff className="text-red-600" size={18} /></div>
                   <div>
-                    <h3 className="font-bold text-slate-800">지연 시간 상세 (Duration 200ms 이상)</h3>
+                    <h3 className="font-bold text-slate-800">{logType === 'linux_secure' ? '보안 이벤트 상세 로그' : '지연 시간 상세 (Duration 200ms 이상)'}</h3>
                     <p className="text-[10px] text-slate-500 font-medium">총 {logs.length.toLocaleString()}건이 발견되었습니다.</p>
                   </div>
                 </div>
@@ -513,10 +534,10 @@ const App = () => {
                         Timestamp {sortConfig.key === 'rawTimestamp' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
                       <th className="px-6 py-4 border-b border-slate-100 cursor-pointer hover:text-blue-600" onClick={() => handleSort('url')}>
-                        Target (API/SQL) {sortConfig.key === 'url' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                        {logType === 'linux_secure' ? 'Message' : 'Target (API/SQL)'} {sortConfig.key === 'url' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
                       <th className="px-6 py-4 border-b border-slate-100 text-right cursor-pointer hover:text-blue-600" onClick={() => handleSort('responseTime')}>
-                        Duration {sortConfig.key === 'responseTime' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                        {logType === 'linux_secure' ? 'Status' : 'Duration'} {sortConfig.key === 'responseTime' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
                     </tr>
                   </thead>
@@ -534,8 +555,8 @@ const App = () => {
                           <div className="text-[10px] text-slate-400 font-mono">{log.method} • {log.ip}</div>
                         </td>
                         <td className="px-6 py-3 text-right">
-                           <span className={`inline-block font-mono font-bold px-3 py-1 rounded-full text-xs shadow-sm ${log.responseTime > 5 ? 'bg-rose-500 text-white' : log.responseTime > 1 ? 'bg-orange-100 text-orange-700' : 'bg-blue-50 text-blue-700'}`}>
-                            {(log.responseTime * 1000).toLocaleString(undefined, {minimumFractionDigits: 1})}ms
+                           <span className={`inline-block font-mono font-bold px-3 py-1 rounded-full text-xs shadow-sm ${logType === 'linux_secure' ? (log.status >= 400 ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600') : (log.responseTime > 5 ? 'bg-rose-500 text-white' : log.responseTime > 1 ? 'bg-orange-100 text-orange-700' : 'bg-blue-50 text-blue-700')}`}>
+                            {logType === 'linux_secure' ? (log.status >= 400 ? 'Alert' : 'Info') : `${(log.responseTime * 1000).toLocaleString(undefined, {minimumFractionDigits: 1})}ms`}
                            </span>
                         </td>
                       </tr>

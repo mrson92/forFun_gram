@@ -9,6 +9,77 @@ import {
   ChevronUp, ChevronDown, Table as TableIcon
 } from 'lucide-react';
 
+// --- Constants & Helpers ---
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e', '#84cc16', '#eab308'];
+const BUCKET_KEYS = ['b10ms', 'b100ms', 'b500ms', 'b1000ms', 'b5s', 'b10s', 'bOver10s'];
+
+const REGEX = {
+  access: /^(\S+)(?:\s+\S+\s+\S+)?\s+\[(.*?)\]\s+"(\S+)\s+(\S+).*?"\s+(\d+)\s+(\d+|-)(?:\s+(\d+\.?\d*))?/,
+  sql: /\[SQL_END\]\s+\[(.*?)\]\s+\[(\d+)ms\]/,
+  sqlTime: /\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})/
+};
+
+const getRespBucket = (timeInSec) => {
+  const ms = timeInSec * 1000;
+  if (ms < 10) return 'b10ms';
+  if (ms < 100) return 'b100ms';
+  if (ms < 500) return 'b500ms';
+  if (ms < 1000) return 'b1000ms';
+  if (ms < 5000) return 'b5s';
+  if (ms < 10000) return 'b10s';
+  return 'bOver10s';
+};
+
+const get5MinKey = (rawTime, type) => {
+  try {
+    if (type === 'sql_logback') {
+      const [date, time] = rawTime.split(' ');
+      const [h, m] = time.split(':');
+      const bucketM = Math.floor(parseInt(m) / 5) * 5;
+      return `${date} ${h}:${bucketM.toString().padStart(2, '0')}`;
+    } else {
+      const parts = rawTime.split(':');
+      const h = parts[1];
+      const m = parts[2];
+      const bucketM = Math.floor(parseInt(m) / 5) * 5;
+      return `${parts[0]} ${h}:${bucketM.toString().padStart(2, '0')}`;
+    }
+  } catch (e) { return "Unknown"; }
+};
+
+const parseLogLine = (line, type) => {
+  if (type === 'sql_logback') {
+    const sqlMatch = line.match(REGEX.sql);
+    if (!sqlMatch) return null;
+    const timeMatch = line.match(REGEX.sqlTime);
+    const durationMs = parseInt(sqlMatch[2]);
+    return {
+      ip: "N/A",
+      rawTimestamp: timeMatch ? timeMatch[1] : "Unknown",
+      method: "SQL",
+      url: sqlMatch[1].split('.').pop(),
+      status: 200,
+      responseTime: durationMs / 1000
+    };
+  } else {
+    const match = line.match(REGEX.access);
+    if (!match) return null;
+    const [_, ip, timestamp, method, url, status, size, respTime] = match;
+    let finalRespTime = respTime ? parseFloat(respTime) : null;
+    if ((type === 'tomcat' || type === 'logback') && finalRespTime !== null && finalRespTime > 100) {
+      finalRespTime = finalRespTime / 1000;
+    }
+    return {
+      ip,
+      rawTimestamp: timestamp,
+      method,
+      url: url.split('?')[0],
+      status: parseInt(status),
+      responseTime: finalRespTime
+    };
+  }
+};
+
 // Custom Tooltip for Charts to show multiple metrics
 const CustomChartTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
@@ -45,38 +116,6 @@ const App = () => {
   const [searchTerm, setSearchTerm] = useState('');
   
   const [sortConfig, setSortConfig] = useState({ key: 'responseTime', direction: 'desc' });
-
-  const accessLogRegex = /^(\S+)(?:\s+\S+\s+\S+)?\s+\[(.*?)\]\s+"(\S+)\s+(\S+).*?"\s+(\d+)\s+(\d+|-)(?:\s+(\d+\.?\d*))?/;
-  const sqlLogRegex = /\[SQL_END\]\s+\[(.*?)\]\s+\[(\d+)ms\]/;
-  const sqlTimeRegex = /\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})/;
-
-  const getRespBucket = (timeInSec) => {
-    const ms = timeInSec * 1000;
-    if (ms < 10) return 'b10ms';
-    if (ms < 100) return 'b100ms';
-    if (ms < 500) return 'b500ms';
-    if (ms < 1000) return 'b1000ms';
-    if (ms < 5000) return 'b5s';
-    if (ms < 10000) return 'b10s';
-    return 'bOver10s';
-  };
-
-  const get5MinKey = (rawTime, type) => {
-    try {
-      if (type === 'sql_logback') {
-        const [date, time] = rawTime.split(' ');
-        const [h, m] = time.split(':');
-        const bucketM = Math.floor(parseInt(m) / 5) * 5;
-        return `${date} ${h}:${bucketM.toString().padStart(2, '0')}`;
-      } else {
-        const parts = rawTime.split(':');
-        const h = parts[1];
-        const m = parts[2];
-        const bucketM = Math.floor(parseInt(m) / 5) * 5;
-        return `${parts[0]} ${h}:${bucketM.toString().padStart(2, '0')}`;
-      }
-    } catch (e) { return "Unknown"; }
-  };
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
@@ -118,96 +157,43 @@ const App = () => {
       for (const line of lines) {
         if (!line.trim()) continue;
 
-        let parsedItem = null;
+        const parsed = parseLogLine(line, logType);
+        if (!parsed) continue;
 
-        if (logType === 'sql_logback') {
-          const sqlMatch = line.match(sqlLogRegex);
-          if (sqlMatch) {
-            totalRequests++;
-            const fullApiName = sqlMatch[1];
-            const durationMs = parseInt(sqlMatch[2]);
-            const apiParts = fullApiName.split('.');
-            const apiName = apiParts[apiParts.length - 1]; 
-            const timeMatch = line.match(sqlTimeRegex);
-            const rawTimestamp = timeMatch ? timeMatch[1] : "Unknown";
-            const finalRespTime = durationMs / 1000;
+        totalRequests++;
+        const { ip, rawTimestamp, url, status, responseTime } = parsed;
 
-            const timeBucketKey = get5MinKey(rawTimestamp, 'sql_logback');
-            const respBucket = getRespBucket(finalRespTime);
+        // Update Maps
+        if (ip !== "N/A") ipMap[ip] = (ipMap[ip] || 0) + 1;
+        apiMap[url] = (apiMap[url] || 0) + 1;
+        
+        const tpsKey = logType === 'sql_logback' ? rawTimestamp : rawTimestamp.split(' ')[0];
+        tpsMap[tpsKey] = (tpsMap[tpsKey] || 0) + 1;
+        
+        if (status >= 400) errorCount++;
 
-            if (!distributionMap[timeBucketKey]) {
-              distributionMap[timeBucketKey] = { b10ms: 0, b100ms: 0, b500ms: 0, b1000ms: 0, b5s: 0, b10s: 0, bOver10s: 0 };
-            }
-            distributionMap[timeBucketKey][respBucket]++;
+        if (responseTime !== null) {
+          const timeBucketKey = get5MinKey(rawTimestamp, logType === 'sql_logback' ? 'sql_logback' : 'access');
+          const respBucket = getRespBucket(responseTime);
 
-            apiMap[apiName] = (apiMap[apiName] || 0) + 1;
-            tpsMap[rawTimestamp] = (tpsMap[rawTimestamp] || 0) + 1;
-
-            if (!apiPerfMap[apiName]) apiPerfMap[apiName] = { total: 0, count: 0 };
-            apiPerfMap[apiName].total += finalRespTime;
-            apiPerfMap[apiName].count += 1;
-            totalResponseTime += finalRespTime;
-            responseTimeCount++;
-
-            parsedItem = {
-              id: totalRequests,
-              ip: "N/A",
-              rawTimestamp,
-              method: "SQL",
-              url: apiName,
-              status: 200,
-              responseTime: finalRespTime
-            };
+          if (!distributionMap[timeBucketKey]) {
+            distributionMap[timeBucketKey] = { b10ms: 0, b100ms: 0, b500ms: 0, b1000ms: 0, b5s: 0, b10s: 0, bOver10s: 0 };
           }
-        } else {
-          const match = line.match(accessLogRegex);
-          if (match) {
-            totalRequests++;
-            const [_, ip, timestamp, method, url, status, size, respTime] = match;
-            const cleanUrl = url.split('?')[0];
-            const timeKey = timestamp.split(' ')[0];
-            const statusInt = parseInt(status);
-            
-            let finalRespTime = respTime ? parseFloat(respTime) : null;
-            if ((logType === 'tomcat' || logType === 'logback') && finalRespTime !== null) {
-              if (finalRespTime > 100) finalRespTime = finalRespTime / 1000;
-            }
+          distributionMap[timeBucketKey][respBucket]++;
 
-            if (finalRespTime !== null) {
-              const timeBucketKey = get5MinKey(timestamp, 'access');
-              const respBucket = getRespBucket(finalRespTime);
-              if (!distributionMap[timeBucketKey]) {
-                distributionMap[timeBucketKey] = { b10ms: 0, b100ms: 0, b500ms: 0, b1000ms: 0, b5s: 0, b10s: 0, bOver10s: 0 };
-              }
-              distributionMap[timeBucketKey][respBucket]++;
-            }
+          if (!apiPerfMap[url]) apiPerfMap[url] = { total: 0, count: 0 };
+          apiPerfMap[url].total += responseTime;
+          apiPerfMap[url].count += 1;
+          
+          totalResponseTime += responseTime;
+          responseTimeCount++;
 
-            ipMap[ip] = (ipMap[ip] || 0) + 1;
-            apiMap[cleanUrl] = (apiMap[cleanUrl] || 0) + 1;
-            tpsMap[timeKey] = (tpsMap[timeKey] || 0) + 1;
-            if (statusInt >= 400) errorCount++;
+          const parsedItem = {
+            id: totalRequests,
+            ...parsed
+          };
 
-            if (finalRespTime !== null) {
-              if (!apiPerfMap[cleanUrl]) apiPerfMap[cleanUrl] = { total: 0, count: 0 };
-              apiPerfMap[cleanUrl].total += finalRespTime;
-              apiPerfMap[cleanUrl].count += 1;
-              totalResponseTime += finalRespTime;
-              responseTimeCount++;
-            }
-
-            parsedItem = {
-              id: totalRequests,
-              ip,
-              rawTimestamp: timestamp,
-              method,
-              url: cleanUrl,
-              status: statusInt,
-              responseTime: finalRespTime
-            };
-          }
-        }
-
-        if (parsedItem && parsedItem.responseTime !== null) {
+          // Slow Samples Logic
           if (slowSamples.length < 1000) {
             slowSamples.push(parsedItem);
             if (slowSamples.length === 1000) {
@@ -298,8 +284,6 @@ const App = () => {
     });
     return result;
   }, [logs, searchTerm, sortConfig]);
-
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e', '#84cc16', '#eab308'];
 
   const SortIndicator = ({ columnKey }) => {
     if (sortConfig.key !== columnKey) return <div className="w-4 h-4 opacity-20"><ChevronUp size={14} /></div>;
@@ -435,6 +419,11 @@ const App = () => {
                             <td className={`px-2 border-l border-slate-50 ${getCellColor(row.bOver10s, total)}`}>
                               {renderCellWithPercentage(row.bOver10s, total)}
                             </td>
+                            {BUCKET_KEYS.map(key => (
+                              <td key={key} className={`px-2 border-l border-slate-50 ${getCellColor(row[key], total)}`}>
+                                {renderCellWithPercentage(row[key], total)}
+                              </td>
+                            ))}
                             <td className="px-2 border-l border-slate-50 bg-slate-50 font-bold text-slate-700">
                               <div className="flex flex-col py-1">
                                 <span>{total.toLocaleString()}</span>

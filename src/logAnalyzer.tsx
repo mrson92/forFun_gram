@@ -1,17 +1,27 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar, Cell
+  BarChart, Bar, Cell, AreaChart, Area
 } from 'recharts';
 import { 
   Upload, FileText, Activity, Users, Globe, AlertTriangle, 
   BarChart3, Clock, Search, Timer, ZapOff, Server, Layout, Coffee, Database,
-  ChevronUp, ChevronDown, Table as TableIcon
+  ChevronUp, ChevronDown, Table as TableIcon, Download, Info, Trash2
 } from 'lucide-react';
 
 // --- Constants & Helpers ---
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e', '#84cc16', '#eab308'];
-const BUCKET_KEYS = ['b10ms', 'b100ms', 'b500ms', 'b1000ms', 'b5s', 'b10s', 'bOver10s'];
+const SLOW_THRESHOLD = 0.2; // 200ms
+
+const BUCKET_CONFIG = [
+  { key: 'b10ms', label: '< 10ms', color: 'bg-emerald-50 text-emerald-700' },
+  { key: 'b100ms', label: '10-100ms', color: 'bg-blue-50 text-blue-700' },
+  { key: 'b500ms', label: '100-500ms', color: 'bg-indigo-50 text-indigo-700' },
+  { key: 'b1000ms', label: '500-1000ms', color: 'bg-amber-50 text-amber-700 font-semibold' },
+  { key: 'b5s', label: '1-5s', color: 'bg-orange-100 text-orange-800 font-bold' },
+  { key: 'b10s', label: '5-10s', color: 'bg-red-100 text-red-800 font-bold' },
+  { key: 'bOver10s', label: '> 10s', color: 'bg-rose-500 text-white font-black' },
+];
 
 const REGEX = {
   access: /^(\S+)(?:\s+\S+\s+\S+)?\s+\[(.*?)\]\s+"(\S+)\s+(\S+).*?"\s+(\d+)\s+(\d+|-)(?:\s+(\d+\.?\d*))?/,
@@ -54,7 +64,7 @@ const parseLogLine = (line, type) => {
     const timeMatch = line.match(REGEX.sqlTime);
     const durationMs = parseInt(sqlMatch[2]);
     return {
-      ip: "N/A",
+      ip: "System",
       rawTimestamp: timeMatch ? timeMatch[1] : "Unknown",
       method: "SQL",
       url: sqlMatch[1].split('.').pop(),
@@ -80,25 +90,24 @@ const parseLogLine = (line, type) => {
   }
 };
 
-// Custom Tooltip for Charts to show multiple metrics
 const CustomChartTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
     return (
-      <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-lg text-xs">
-        <p className="font-bold mb-2 text-slate-800 border-b border-slate-100 pb-1 truncate max-w-[250px]">{label}</p>
-        <div className="space-y-1.5">
-          <div className="flex justify-between gap-4">
-            <span className="text-slate-500 font-medium">실행 횟수:</span>
+      <div className="bg-white p-4 border border-slate-200 shadow-2xl rounded-xl text-xs min-w-[200px]">
+        <p className="font-bold mb-3 text-slate-800 border-b border-slate-100 pb-2 break-all">{label}</p>
+        <div className="space-y-2">
+          <div className="flex justify-between items-center gap-4">
+            <span className="text-slate-500 font-medium italic">Count:</span>
             <span className="font-bold text-slate-900">{data.count?.toLocaleString()}회</span>
           </div>
-          <div className="flex justify-between gap-4">
-            <span className="text-slate-500 font-medium">평균 응답:</span>
+          <div className="flex justify-between items-center gap-4">
+            <span className="text-slate-500 font-medium italic">Avg Response:</span>
             <span className="font-bold text-blue-600">{(data.avgTime * 1000).toFixed(2)}ms</span>
           </div>
-          <div className="flex justify-between gap-4">
-            <span className="text-slate-500 font-medium">총 응답시간:</span>
-            <span className="font-bold text-orange-600">{data.total?.toFixed(3)}s</span>
+          <div className="flex justify-between items-center gap-4">
+            <span className="text-slate-500 font-medium italic">Total Time:</span>
+            <span className="font-bold text-orange-600 font-mono">{data.total?.toFixed(3)}s</span>
           </div>
         </div>
       </div>
@@ -114,9 +123,36 @@ const App = () => {
   const [progress, setProgress] = useState(0);
   const [logType, setLogType] = useState('sql_logback'); 
   const [searchTerm, setSearchTerm] = useState('');
-  const [responseTimeThreshold, setResponseTimeThreshold] = useState(200); // Added state for response time threshold
-  
   const [sortConfig, setSortConfig] = useState({ key: 'responseTime', direction: 'desc' });
+
+  const resetState = () => {
+    setLogs([]);
+    setSummaryStats(null);
+    setProgress(0);
+    setSearchTerm('');
+  };
+
+  const downloadCSV = useCallback(() => {
+    if (!logs.length) return;
+    const headers = ["No", "Timestamp", "Method", "Target (URL/SQL)", "ResponseTime(ms)"];
+    const rows = logs.map((l, i) => [
+      i + 1,
+      l.rawTimestamp,
+      l.method,
+      l.url,
+      (l.responseTime * 1000).toFixed(2)
+    ]);
+    
+    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `slow_logs_over_200ms_${logType}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [logs, logType]);
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
@@ -124,9 +160,7 @@ const App = () => {
 
     setIsProcessing(true);
     setProgress(0);
-    setLogs([]);
-    setSummaryStats(null);
-
+    
     const ipMap = {};
     const apiMap = {};
     const tpsMap = {};
@@ -138,13 +172,11 @@ const App = () => {
     let totalResponseTime = 0;
     let responseTimeCount = 0;
     
-    let slowSamples = [];
-    let minTimeInSlowSamples = 0;
+    let filteredLogs = [];
 
-    const chunkSize = 1024 * 1024 * 2; 
+    const chunkSize = 1024 * 1024 * 4; // 4MB chunks
     let offset = 0;
     let leftover = ""; 
-
     const decoder = new TextDecoder();
 
     while (offset < file.size) {
@@ -152,20 +184,17 @@ const App = () => {
       const buffer = await slice.arrayBuffer();
       const chunk = leftover + decoder.decode(buffer, { stream: true });
       const lines = chunk.split(/\r?\n/);
-      
       leftover = lines.pop();
 
       for (const line of lines) {
         if (!line.trim()) continue;
-
         const parsed = parseLogLine(line, logType);
         if (!parsed) continue;
 
         totalRequests++;
         const { ip, rawTimestamp, url, status, responseTime } = parsed;
 
-        // Update Maps
-        if (ip !== "N/A") ipMap[ip] = (ipMap[ip] || 0) + 1;
+        if (ip !== "System") ipMap[ip] = (ipMap[ip] || 0) + 1;
         apiMap[url] = (apiMap[url] || 0) + 1;
         
         const tpsKey = logType === 'sql_logback' ? rawTimestamp : rawTimestamp.split(' ')[0];
@@ -189,259 +218,208 @@ const App = () => {
           totalResponseTime += responseTime;
           responseTimeCount++;
 
-          const parsedItem = {
-            id: totalRequests,
-            ...parsed
-          };
-
-          // Slow Samples Logic
-          if (slowSamples.length < 1000) {
-            slowSamples.push(parsedItem);
-            if (slowSamples.length === 1000) {
-              minTimeInSlowSamples = Math.min(...slowSamples.map(s => s.responseTime));
-            }
-          } else if (parsedItem.responseTime > minTimeInSlowSamples) {
-            const minIndex = slowSamples.findIndex(s => s.responseTime === minTimeInSlowSamples);
-            slowSamples[minIndex] = parsedItem;
-            minTimeInSlowSamples = Math.min(...slowSamples.map(s => s.responseTime));
+          // 200ms(0.2s) 이상인 것만 상세 목록용으로 수집
+          if (responseTime >= SLOW_THRESHOLD) {
+            filteredLogs.push({ id: totalRequests, ...parsed });
           }
         }
       }
-
       offset += chunkSize;
       setProgress(Math.round((offset / file.size) * 100));
     }
 
-    const sortedSamples = [...slowSamples].sort((a, b) => b.responseTime - a.responseTime);
-
+    const sortedFilteredLogs = [...filteredLogs].sort((a, b) => b.responseTime - a.responseTime);
     const topIps = Object.entries(ipMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => ({ name, count }));
-    
-    // Updated: topApis including performance data for tooltips
-    const topApis = Object.entries(apiMap)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name, count]) => {
-        const perf = apiPerfMap[name] || { total: 0, count: 0 };
-        return { 
-          name, 
-          count,
-          total: perf.total,
-          avgTime: perf.count > 0 ? perf.total / perf.count : 0
-        };
-      });
+    const topApis = Object.entries(apiMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => {
+      const perf = apiPerfMap[name] || { total: 0, count: 0 };
+      return { name, count, total: perf.total, avgTime: perf.count > 0 ? perf.total / perf.count : 0 };
+    });
+    const topSlowApis = Object.entries(apiPerfMap).map(([name, data]) => ({ 
+      name, avgTime: data.total / data.count, count: data.count, total: data.total 
+    })).sort((a, b) => b.avgTime - a.avgTime).slice(0, 20);
 
-    // Updated: topSlowApis including all necessary data for tooltips
-    const topSlowApis = Object.entries(apiPerfMap)
-      .map(([name, data]) => ({ 
-        name, 
-        avgTime: data.total / data.count, 
-        count: data.count,
-        total: data.total
-      }))
-      .sort((a, b) => b.avgTime - a.avgTime)
-      .slice(0, 20);
+    const tpsData = Object.entries(tpsMap).sort((a, b) => a[0].localeCompare(b[0])).map(([time, count]) => ({ 
+      time: time.includes(' ') ? time.split(' ')[1] : time, tps: count 
+    }));
 
-    const tpsData = Object.entries(tpsMap).sort((a, b) => a[0].localeCompare(b[0])).map(([time, count]) => ({ time: time.includes(' ') ? time.split(' ')[1] : time, tps: count }));
+    const distributionStats = Object.entries(distributionMap).sort((a, b) => a[0].localeCompare(b[0])).map(([time, buckets]) => ({ 
+      time, ...buckets 
+    }));
 
-    const distributionStats = Object.entries(distributionMap)
-      .sort((a, b) => a[0].localeCompare(b[0]) || 0)
-      .map(([time, buckets]) => ({ time, ...buckets }));
-
-    setLogs(sortedSamples);
+    setLogs(sortedFilteredLogs);
     setSummaryStats({
       totalRequests,
       uniqueIps: Object.keys(ipMap).length,
       uniqueApis: Object.keys(apiMap).length,
       errorRate: totalRequests > 0 ? ((errorCount / totalRequests) * 100).toFixed(2) : 0,
       avgResponseTime: responseTimeCount > 0 ? (totalResponseTime / responseTimeCount).toFixed(3) : "N/A",
-      topIps,
-      topApis,
-      topSlowApis,
-      tpsData,
-      distributionStats,
+      topIps, topApis, topSlowApis, tpsData, distributionStats,
       maxTps: tpsData.length > 0 ? Math.max(...tpsData.map(d => d.tps)) : 0
     });
     setIsProcessing(false);
-    setSortConfig({ key: 'responseTime', direction: 'desc' });
   };
 
   const handleSort = (key) => {
-    let direction = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') {
-      direction = 'desc';
-    }
-    setSortConfig({ key, direction });
+    setSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc' }));
   };
 
   const sortedAndFilteredLogs = useMemo(() => {
     let result = [...logs];
     if (searchTerm) result = result.filter(l => l.url.toLowerCase().includes(searchTerm.toLowerCase()));
-    result = result.filter(log => (log.responseTime * 1000) > responseTimeThreshold); // Apply the threshold filter
-
     result.sort((a, b) => {
-      const aValue = a[sortConfig.key];
-      const bValue = b[sortConfig.key];
-      if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+      const aVal = a[sortConfig.key];
+      const bVal = b[sortConfig.key];
+      if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
     });
     return result;
-  }, [logs, searchTerm, sortConfig, responseTimeThreshold]);
+  }, [logs, searchTerm, sortConfig]);
 
-  const SortIndicator = ({ columnKey }) => {
-    if (sortConfig.key !== columnKey) return <div className="w-4 h-4 opacity-20"><ChevronUp size={14} /></div>;
-    return sortConfig.direction === 'asc' ? <ChevronUp size={14} className="text-blue-600" /> : <ChevronDown size={14} className="text-blue-600" />;
-  };
-
-  const getCellColor = (val, max) => {
-    if (!val) return 'text-slate-300';
-    const intensity = Math.min(Math.round((val / max) * 100), 100);
-    if (intensity < 5) return 'bg-blue-50 text-blue-800';
-    if (intensity < 20) return 'bg-blue-100 text-blue-900';
-    if (intensity < 50) return 'bg-blue-200 text-blue-950 font-bold';
-    return 'bg-blue-400 text-white font-bold';
-  };
-
-  const renderCellWithPercentage = (val, total) => {
-    const percentage = total > 0 ? Math.round((val / total) * 100) : 0;
-    return (
-      <div className="flex flex-col py-1">
-        <span>{val.toLocaleString()}</span>
-        <span className="text-[9px] opacity-70">({percentage}%)</span>
-      </div>
-    );
+  const getIntensityColor = (val, max) => {
+    if (!val || val === 0) return 'text-slate-200';
+    const ratio = val / max;
+    if (ratio < 0.05) return 'bg-slate-50 text-slate-400';
+    if (ratio < 0.2) return 'bg-blue-50 text-blue-600';
+    if (ratio < 0.5) return 'bg-blue-100 text-blue-800 font-semibold';
+    return 'bg-blue-500 text-white font-bold';
   };
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900">
       <header className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2 text-slate-800">
-            <Activity className="text-blue-600" />
-            Log Analyzer <span className="text-slate-400 font-normal text-lg tracking-tighter">v1.9</span>
-          </h1>
-          <p className="text-slate-500 font-medium">통합 성능 분석 및 SQL 모니터링 도구</p>
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-200">
+            <Activity className="text-white" size={28} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+              Log Analyzer <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-sm font-bold uppercase tracking-wider">Pro 2.0</span>
+            </h1>
+            <p className="text-slate-500 text-sm font-medium italic">High-Performance Log Processing & Insights</p>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
+        <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
           <div className="flex bg-slate-100 p-1 rounded-xl">
             {[
-              { id: 'sql_logback', label: 'MyBatis SQL', icon: <Database size={14}/> },
+              { id: 'sql_logback', label: 'MyBatis', icon: <Database size={14}/> },
               { id: 'nginx', label: 'Nginx', icon: <Server size={14}/> },
               { id: 'tomcat', label: 'Tomcat', icon: <Layout size={14}/> },
               { id: 'logback', label: 'Logback', icon: <Coffee size={14}/> }
             ].map(type => (
               <button 
                 key={type.id}
-                onClick={() => setLogType(type.id)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all ${logType === type.id ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                onClick={() => { setLogType(type.id); resetState(); }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${logType === type.id ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 {type.icon} {type.label}
               </button>
             ))}
           </div>
-          <label className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl cursor-pointer transition-all shadow-md font-bold active:scale-95">
-            <Upload size={18} />
+          <label className="flex items-center gap-2 bg-slate-900 hover:bg-black text-white px-5 py-2.5 rounded-xl cursor-pointer transition-all shadow-md font-bold active:scale-95 group">
+            <Upload size={18} className="group-hover:translate-y-[-2px] transition-transform" />
             <span>파일 업로드</span>
             <input type="file" className="hidden" onChange={handleFileUpload} accept=".log,.txt" />
           </label>
         </div>
-          <div className="flex items-center gap-2 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
-              <label htmlFor="responseTimeThreshold" className="text-sm font-medium text-slate-700">
-                  지연 시간 임계값 (ms):
-              </label>
-              <input
-                  type="number" id="responseTimeThreshold" className="w-20 px-3 py-2 border rounded-md shadow-sm focus:ring focus:ring-blue-200 focus:outline-none text-sm"
-                  value={responseTimeThreshold}
-                  onChange={(e) => setResponseTimeThreshold(Number(e.target.value))}
-              />
-          </div>
       </header>
 
       {isProcessing && (
-        <div className="flex flex-col justify-center items-center py-24 bg-white rounded-3xl shadow-sm border border-slate-100 max-w-7xl mx-auto">
-          <div className="relative w-24 h-24 mb-6">
+        <div className="flex flex-col justify-center items-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100 max-w-7xl mx-auto">
+          <div className="relative w-28 h-28 mb-8">
              <div className="absolute inset-0 rounded-full border-4 border-slate-100"></div>
              <div className="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
-             <div className="absolute inset-0 flex items-center justify-center font-bold text-blue-600">
-                {progress}%
+             <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-xl font-black text-blue-600">{progress}%</span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Parsing</span>
              </div>
           </div>
-          <span className="text-xl text-slate-700 font-black mb-2">{logType === 'sql_logback' ? 'MyBatis SQL' : '로그'} 데이터 스트리밍 분석 중...</span>
-          <p className="text-slate-400 text-sm">대용량 파일 처리를 위해 메모리를 최적화하고 있습니다.</p>
+          <h2 className="text-xl text-slate-800 font-black mb-2">대용량 스트리밍 분석 중...</h2>
+          <p className="text-slate-400 text-sm max-w-md text-center">200ms 이상 지연 건을 선별하고 있습니다. 잠시만 기다려 주세요.</p>
         </div>
       )}
 
       {summaryStats && !isProcessing && (
         <main className="max-w-7xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* Top Stats */}
           <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard icon={<FileText className="text-blue-500" />} label={logType === 'sql_logback' ? "전체 쿼리 실행" : "전체 요청"} value={summaryStats.totalRequests.toLocaleString()} />
-            <StatCard icon={<Timer className="text-orange-500" />} label="평균 응답시간" value={summaryStats.avgResponseTime + (summaryStats.avgResponseTime !== "N/A" ? "s" : "")} />
-            <StatCard icon={<Globe className="text-purple-500" />} label={logType === 'sql_logback' ? "유니크 쿼리" : "유니크 API"} value={summaryStats.uniqueApis.toLocaleString()} />
-            <StatCard 
-              icon={<AlertTriangle className={summaryStats.errorRate > 5 ? 'text-red-500' : 'text-amber-500'} />} 
-              label={logType === 'sql_logback' ? "처리 상태" : "에러율"} 
-              value={logType === 'sql_logback' ? "Healthy" : `${summaryStats.errorRate}%`} 
-            />
+            <StatCard icon={<FileText className="text-blue-500" />} label={logType === 'sql_logback' ? "쿼리 실행" : "전체 요청"} value={summaryStats.totalRequests.toLocaleString()} />
+            <StatCard icon={<Timer className="text-orange-500" />} label="평균 응답시간" value={summaryStats.avgResponseTime + "s"} />
+            <StatCard icon={<Globe className="text-indigo-500" />} label={logType === 'sql_logback' ? "유니크 쿼리" : "유니크 경로"} value={summaryStats.uniqueApis.toLocaleString()} />
+            <StatCard icon={<Activity className="text-emerald-500" />} label="최고 부하 (Peak)" value={summaryStats.maxTps + (logType === 'sql_logback' ? " QPS" : " TPS")} />
           </section>
 
+          {/* TPS Chart */}
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+            <div className="flex justify-between items-center mb-6">
+               <h3 className="text-lg font-bold flex items-center gap-2">
+                 <Clock className="text-blue-500" />
+                 시간대별 트래픽 추이 ({logType === 'sql_logback' ? 'QPS' : 'TPS'})
+               </h3>
+               <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 border border-slate-100 px-3 py-1 rounded-full uppercase">
+                 <Info size={12}/> {summaryStats.tpsData.length} Data Points
+               </div>
+            </div>
+            <div className="h-[280px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={summaryStats.tpsData}>
+                  <defs>
+                    <linearGradient id="colorTps" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="time" hide={summaryStats.tpsData.length > 200} tick={{fontSize: 10}} />
+                  <YAxis tick={{fontSize: 10}} />
+                  <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)' }} />
+                  <Area type="monotone" dataKey="tps" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorTps)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Distribution Heatmap Table */}
           <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
-             <div className="flex items-center gap-2 mb-6">
-                <TableIcon className="text-blue-600" size={20} />
-                <h3 className="text-lg font-bold">5분 단위 응답시간 분포 (집계)</h3>
+             <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-2">
+                   <TableIcon className="text-blue-600" size={20} />
+                   <h3 className="text-lg font-bold">5분 주기 응답 시간 분포 (히트맵)</h3>
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono italic">Percentage of interval total</div>
              </div>
              <div className="overflow-x-auto">
-                <table className="w-full text-center text-[11px] border-collapse">
+                <table className="w-full text-center text-[11px] border-collapse min-w-[800px]">
                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-bold uppercase">
-                         <th className="px-4 py-3 text-left w-40">시간대 (5분 단위)</th>
-                         <th className="px-2 py-3 border-l border-slate-100">&lt; 10ms</th>
-                         <th className="px-2 py-3 border-l border-slate-100">10~100ms</th>
-                         <th className="px-2 py-3 border-l border-slate-100">100~500ms</th>
-                         <th className="px-2 py-3 border-l border-slate-100">500~1000ms</th>
-                         <th className="px-2 py-3 border-l border-slate-100">1~5s</th>
-                         <th className="px-2 py-3 border-l border-slate-100">5~10s</th>
-                         <th className="px-2 py-3 border-l border-slate-100">&gt; 10s</th>
-                         <th className="px-2 py-3 border-l border-slate-100 bg-slate-100/50">합계</th>
+                      <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-bold uppercase tracking-wider">
+                         <th className="px-6 py-4 text-left w-48">Interval</th>
+                         {BUCKET_CONFIG.map(b => (
+                           <th key={b.key} className="px-2 py-4 border-l border-slate-100">{b.label}</th>
+                         ))}
+                         <th className="px-4 py-4 border-l border-slate-100 bg-slate-100/50">Total</th>
                       </tr>
                    </thead>
                    <tbody className="divide-y divide-slate-50">
                       {summaryStats.distributionStats.map((row, idx) => {
-                        const total = row.b10ms + row.b100ms + row.b500ms + row.b1000ms + row.b5s + row.b10s + row.bOver10s;
+                        const rowTotal = BUCKET_CONFIG.reduce((acc, b) => acc + row[b.key], 0);
                         return (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-4 py-2 text-left font-mono font-bold text-slate-600 whitespace-nowrap">{row.time}</td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b10ms, total)}`}>
-                              {renderCellWithPercentage(row.b10ms, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b100ms, total)}`}>
-                              {renderCellWithPercentage(row.b100ms, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b500ms, total)}`}>
-                              {renderCellWithPercentage(row.b500ms, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b1000ms, total)}`}>
-                              {renderCellWithPercentage(row.b1000ms, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b5s, total)}`}>
-                              {renderCellWithPercentage(row.b5s, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.b10s, total)}`}>
-                              {renderCellWithPercentage(row.b10s, total)}
-                            </td>
-                            <td className={`px-2 border-l border-slate-50 ${getCellColor(row.bOver10s, total)}`}>
-                              {renderCellWithPercentage(row.bOver10s, total)}
-                            </td>
-                            {BUCKET_KEYS.map(key => (
-                              <td key={key} className={`px-2 border-l border-slate-50 ${getCellColor(row[key], total)}`}>
-                                {renderCellWithPercentage(row[key], total)}
-                              </td>
-                            ))}
-                            <td className="px-2 border-l border-slate-50 bg-slate-50 font-bold text-slate-700">
-                              <div className="flex flex-col py-1">
-                                <span>{total.toLocaleString()}</span>
-                                <span className="text-[9px] opacity-40">(100%)</span>
-                              </div>
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                            <td className="px-6 py-3 text-left font-mono font-bold text-slate-600 bg-slate-50/30 group-hover:bg-slate-100 transition-colors">{row.time}</td>
+                            {BUCKET_CONFIG.map(b => {
+                              const val = row[b.key];
+                              const pct = rowTotal > 0 ? Math.round((val / rowTotal) * 100) : 0;
+                              return (
+                                <td key={b.key} className={`px-2 py-3 border-l border-slate-50 ${getIntensityColor(val, rowTotal)}`}>
+                                   <div className="flex flex-col">
+                                      <span className="text-sm">{val.toLocaleString()}</span>
+                                      <span className="text-[9px] opacity-60 font-medium">({pct}%)</span>
+                                   </div>
+                                </td>
+                              );
+                            })}
+                            <td className="px-4 py-3 border-l border-slate-50 bg-slate-50 font-black text-slate-800">
+                              {rowTotal.toLocaleString()}
                             </td>
                           </tr>
                         );
@@ -451,63 +429,43 @@ const App = () => {
              </div>
           </div>
 
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
-            <h3 className="text-lg font-bold flex items-center gap-2 mb-6">
-              <Clock className="text-blue-500" />
-              {logType === 'sql_logback' ? '초당 쿼리 실행 추이 (QPS)' : 'TPS 추이'}
-            </h3>
-            <div className="h-[250px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={summaryStats.tpsData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="time" hide={summaryStats.tpsData.length > 200} tick={{fontSize: 10}} />
-                  <YAxis tick={{fontSize: 10}} />
-                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                  <Line type="monotone" dataKey="tps" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
-            <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-              <ZapOff className="text-red-500" />
-              {logType === 'sql_logback' ? '느린 SQL 쿼리 Top 20' : '응답 지연 API Top 20'}
-            </h3>
-            {summaryStats.topSlowApis.length > 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Slow APIs Bar Chart */}
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+              <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                <ZapOff className="text-red-500" />
+                지연 시간 상위 API (Avg Response)
+              </h3>
               <div className="h-[450px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={summaryStats.topSlowApis} layout="vertical">
+                  <BarChart data={summaryStats.topSlowApis} layout="vertical" margin={{ left: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
                     <XAxis type="number" tick={{fontSize: 10}} />
-                    <YAxis type="category" dataKey="name" width={180} tick={{ fontSize: 10, fontWeight: 'bold' }} />
+                    <YAxis type="category" dataKey="name" width={160} tick={{ fontSize: 9, fontWeight: 'bold' }} />
                     <Tooltip content={<CustomChartTooltip />} />
-                    <Bar dataKey="avgTime" fill="#ef4444" radius={[0, 4, 4, 0]} barSize={14}>
+                    <Bar dataKey="avgTime" radius={[0, 4, 4, 0]} barSize={16}>
                       {summaryStats.topSlowApis.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index < 3 ? '#ef4444' : '#f87171'} />
+                        <Cell key={`cell-${index}`} fill={index < 3 ? '#ef4444' : '#fca5a5'} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-            ) : (
-              <div className="h-[150px] flex items-center justify-center text-slate-400 border border-dashed rounded-2xl text-sm italic">분석된 실행 시간 데이터가 없습니다.</div>
-            )}
-          </div>
+            </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Most Frequent APIs */}
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <BarChart3 className="text-emerald-500" />
-                {logType === 'sql_logback' ? '최다 실행 SQL' : '호출 빈도 Top 10'}
+                호출 빈도 상위 10건
               </h3>
-              <div className="h-[300px]">
+              <div className="h-[450px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={summaryStats.topApis} layout="vertical">
+                  <BarChart data={summaryStats.topApis} layout="vertical" margin={{ left: 20 }}>
                     <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 10 }} />
+                    <YAxis type="category" dataKey="name" width={160} tick={{ fontSize: 9, fontWeight: 'bold' }} />
                     <Tooltip content={<CustomChartTooltip />} />
-                    <Bar dataKey="count" fill="#10b981" radius={[0, 4, 4, 0]} barSize={18}>
+                    <Bar dataKey="count" fill="#10b981" radius={[0, 4, 4, 0]} barSize={16}>
                        {summaryStats.topApis.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
@@ -516,102 +474,80 @@ const App = () => {
                 </ResponsiveContainer>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
-              <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-                <Users className="text-purple-500" />
-                {logType === 'sql_logback' ? '시스템 정보' : '접속 IP Top 10'}
-              </h3>
-              <div className="space-y-4">
-                {logType === 'sql_logback' ? (
-                  <div className="p-4 bg-slate-50 rounded-2xl space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-500">분석 모드</span>
-                      <span className="font-bold text-blue-600 uppercase">MyBatis SQL SQL_END Mode</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-500">통계 단위</span>
-                      <span className="font-bold">5-Min Intervals</span>
-                    </div>
-                  </div>
-                ) : (
-                  summaryStats.topIps.map((ip, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-2 border-b border-slate-50">
-                      <span className="text-sm font-mono text-slate-600">{ip.name}</span>
-                      <span className="text-sm font-bold text-slate-800">{ip.count.toLocaleString()}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
           </div>
 
+          {/* Details Table */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
-             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <div className="flex items-center gap-2">
-                  <ZapOff className="text-red-500" size={18} />
-                  <h3 className="font-bold text-slate-700">지연 시간 상위 1,000건 상세</h3>
+             <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-red-100 rounded-lg"><ZapOff className="text-red-600" size={18} /></div>
+                  <div>
+                    <h3 className="font-bold text-slate-800">지연 시간 상세 (Duration 200ms 이상)</h3>
+                    <p className="text-[10px] text-slate-500 font-medium">총 {logs.length.toLocaleString()}건이 발견되었습니다.</p>
+                  </div>
                 </div>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                  <input 
-                    type="text" placeholder="결과 내 검색..." 
-                    className="pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none w-64"
-                    value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-                  />
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                    <input 
+                      type="text" placeholder="쿼리/API 검색..." 
+                      className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                      value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                  </div>
+                  <button 
+                    onClick={downloadCSV}
+                    className="p-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-all shadow-sm active:scale-95"
+                    title="CSV로 내보내기"
+                  >
+                    <Download size={18} />
+                  </button>
                 </div>
              </div>
-             <div className="overflow-x-auto max-h-[500px]">
-               <table className="w-full text-left text-sm">
+             <div className="overflow-x-auto max-h-[600px] border-t border-slate-100">
+               <table className="w-full text-left text-sm border-separate border-spacing-0">
                   <thead className="bg-slate-50 sticky top-0 shadow-sm z-10">
-                    <tr>
-                      <th className="px-6 py-3 font-bold text-slate-500">순위</th>
-                      <th 
-                        className="px-6 py-3 font-bold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors"
-                        onClick={() => handleSort('rawTimestamp')}
-                      >
-                        <div className="flex items-center gap-1">
-                          시간
-                          <SortIndicator columnKey="rawTimestamp" />
-                        </div>
+                    <tr className="text-slate-500 font-bold text-xs uppercase tracking-tighter">
+                      <th className="px-6 py-4 border-b border-slate-100">No</th>
+                      <th className="px-6 py-4 border-b border-slate-100 cursor-pointer hover:text-blue-600" onClick={() => handleSort('rawTimestamp')}>
+                        Timestamp {sortConfig.key === 'rawTimestamp' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
-                      <th 
-                        className="px-6 py-3 font-bold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors"
-                        onClick={() => handleSort('url')}
-                      >
-                        <div className="flex items-center gap-1">
-                          {logType === 'sql_logback' ? '매퍼 메서드' : 'API 경로'}
-                          <SortIndicator columnKey="url" />
-                        </div>
+                      <th className="px-6 py-4 border-b border-slate-100 cursor-pointer hover:text-blue-600" onClick={() => handleSort('url')}>
+                        Target (API/SQL) {sortConfig.key === 'url' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
-                      <th 
-                        className="px-6 py-3 font-bold text-slate-500 cursor-pointer hover:bg-slate-100 transition-colors"
-                        onClick={() => handleSort('responseTime')}
-                      >
-                        <div className="flex items-center gap-1">
-                          실행 시간
-                          <SortIndicator columnKey="responseTime" />
-                        </div>
+                      <th className="px-6 py-4 border-b border-slate-100 text-right cursor-pointer hover:text-blue-600" onClick={() => handleSort('responseTime')}>
+                        Duration {sortConfig.key === 'responseTime' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-slate-100 bg-white">
                     {sortedAndFilteredLogs.map((log, index) => (
-                      <tr key={`${log.id}-${index}`} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-2 text-slate-400 font-bold">
-                          {sortConfig.key === 'responseTime' && sortConfig.direction === 'desc' ? index + 1 : '-'}
+                      <tr key={`${log.id}-${index}`} className="hover:bg-blue-50/30 transition-colors group">
+                        <td className="px-6 py-3 text-slate-400 font-black text-xs">
+                          {index + 1}
                         </td>
-                        <td className="px-6 py-2 text-slate-400 text-xs font-mono">{log.rawTimestamp}</td>
-                        <td className="px-6 py-2 font-bold text-slate-700 truncate max-w-[400px]">{log.url}</td>
-                        <td className="px-6 py-2 font-mono text-xs">
-                           <span className={`font-bold px-2 py-1 rounded ${log.responseTime > 1 ? 'bg-red-100 text-red-600' : log.responseTime > 0.1 ? 'bg-orange-100 text-orange-600' : 'text-slate-500'}`}>
-                            {(log.responseTime * 1000).toLocaleString()}ms
+                        <td className="px-6 py-3 text-slate-500 text-[11px] font-mono whitespace-nowrap">{log.rawTimestamp}</td>
+                        <td className="px-6 py-3">
+                          <div className="font-bold text-slate-700 truncate max-w-[500px] group-hover:text-blue-700 transition-colors" title={log.url}>
+                            {log.url}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono">{log.method} • {log.ip}</div>
+                        </td>
+                        <td className="px-6 py-3 text-right">
+                           <span className={`inline-block font-mono font-bold px-3 py-1 rounded-full text-xs shadow-sm ${log.responseTime > 5 ? 'bg-rose-500 text-white' : log.responseTime > 1 ? 'bg-orange-100 text-orange-700' : 'bg-blue-50 text-blue-700'}`}>
+                            {(log.responseTime * 1000).toLocaleString(undefined, {minimumFractionDigits: 1})}ms
                            </span>
                         </td>
                       </tr>
                     ))}
                     {sortedAndFilteredLogs.length === 0 && (
                       <tr>
-                        <td colSpan="4" className="px-6 py-10 text-center text-slate-400 italic">표시할 데이터가 없습니다.</td>
+                        <td colSpan="4" className="px-6 py-20 text-center">
+                          <div className="flex flex-col items-center gap-3 text-slate-300">
+                             <Search size={48} />
+                             <p className="text-slate-400 italic text-sm font-medium">200ms 이상 지연된 건이 없거나 로그가 로드되지 않았습니다.</p>
+                          </div>
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -621,30 +557,52 @@ const App = () => {
         </main>
       )}
 
-      {!logs.length && !isProcessing && (
-        <div className="max-w-3xl mx-auto mt-20 text-center p-20 border-2 border-dashed border-slate-200 rounded-[3rem] bg-white shadow-xl shadow-slate-200/50">
-          <div className="bg-blue-50 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-inner">
-            <Database className="text-blue-500" size={48} />
+      {/* Landing / Empty State */}
+      {!summaryStats && !isProcessing && (
+        <div className="max-w-4xl mx-auto mt-16 text-center animate-in zoom-in-95 duration-700">
+          <div className="bg-white p-16 border-2 border-dashed border-slate-200 rounded-[3rem] shadow-2xl shadow-slate-200/50 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
+               <Database size={240} />
+            </div>
+            
+            <div className="bg-blue-600 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 shadow-xl shadow-blue-200 rotate-3 group-hover:rotate-0 transition-transform">
+              <Activity className="text-white" size={48} />
+            </div>
+            
+            <h2 className="text-4xl font-black mb-6 text-slate-900 tracking-tight">Performance Analytics Dashboard</h2>
+            <p className="text-slate-500 mb-12 leading-relaxed text-lg max-w-2xl mx-auto font-medium">
+              로그 파일을 업로드하여 초당 트래픽(TPS/QPS), 응답 시간 분포 히트맵, <br/>
+              그리고 <span className="text-red-500 font-black">200ms 이상 지연된 모든 내역</span>을 즉시 분석하세요.
+            </p>
+            
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <label className="inline-flex items-center gap-3 bg-slate-900 hover:bg-black text-white px-10 py-5 rounded-2xl cursor-pointer shadow-2xl font-black text-xl transition-all hover:scale-105 active:scale-95">
+                <Upload size={24} />
+                분석 시작하기
+                <input type="file" className="hidden" onChange={handleFileUpload} accept=".log,.txt" />
+              </label>
+              <button 
+                onClick={() => { setLogType('sql_logback'); resetState(); }} 
+                className="inline-flex items-center gap-2 bg-white border border-slate-200 text-slate-500 px-8 py-5 rounded-2xl font-bold hover:bg-slate-50 transition-all active:scale-95"
+              >
+                <Trash2 size={20} />
+                초기화
+              </button>
+            </div>
           </div>
-          <h2 className="text-2xl font-black mb-4">SQL 및 액세스 로그 통합 분석</h2>
-          <p className="text-slate-500 mb-10 leading-relaxed">
-            대용량 로그 파일에서 <b>성능이 가장 낮은 1,000건</b>을 선별하고<br/>
-            5분 단위 응답시간 분포 통계를 제공합니다.
-          </p>
-          <label className="inline-flex items-center gap-3 bg-slate-900 hover:bg-black text-white px-12 py-5 rounded-2xl cursor-pointer shadow-2xl font-black text-xl transition-all hover:scale-105 active:scale-95">
-            <Upload size={24} />
-            분석 파일 업로드
-            <input type="file" className="hidden" onChange={handleFileUpload} accept=".log,.txt" />
-          </label>
         </div>
       )}
+      
+      <footer className="max-w-7xl mx-auto mt-12 pb-12 text-center">
+         <p className="text-slate-400 text-[11px] font-bold uppercase tracking-[0.2em]">Stream Processing • Local Privacy • Real-time Insights</p>
+      </footer>
     </div>
   );
 };
 
 const StatCard = ({ icon, label, value }) => (
-  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex items-center gap-5 hover:border-blue-200 transition-all hover:shadow-md">
-    <div className="p-4 bg-slate-50 rounded-2xl">{icon}</div>
+  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex items-center gap-5 hover:border-blue-300 transition-all hover:shadow-md group">
+    <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">{icon}</div>
     <div>
       <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1">{label}</p>
       <p className="text-2xl font-black text-slate-800 tracking-tighter">{value}</p>
